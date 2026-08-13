@@ -1,0 +1,108 @@
+name: Create AKS and Deploy Python App
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_infra:
+        description: "Create/ensure AKS cluster exists (set false to only deploy)"
+        required: true
+        default: true
+        type: boolean
+
+env:
+  RESOURCE_GROUP: my-resource-group
+  LOCATION: eastus
+  AKS_CLUSTER_NAME: my-aks-cluster
+  NODE_COUNT: 2
+  VM_SIZE: Standard_DS2_v2
+  ACR_NAME: myacrregistry123          # must be globally unique, alphanumeric only
+  IMAGE_NAME: my-python-app
+  NAMESPACE: default
+
+jobs:
+  create-infra:
+    if: ${{ github.event.inputs.create_infra == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Create Resource Group (idempotent)
+        run: |
+          az group create \
+            --name "$RESOURCE_GROUP" \
+            --location "$LOCATION"
+
+      - name: Create ACR (idempotent)
+        run: |
+          az acr create \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$ACR_NAME" \
+            --sku Basic \
+            --admin-enabled false || echo "ACR already exists, skipping"
+
+      - name: Create AKS Cluster (idempotent)
+        run: |
+          if az aks show --resource-group "$RESOURCE_GROUP" --name "$AKS_CLUSTER_NAME" &> /dev/null; then
+            echo "AKS cluster already exists, skipping creation"
+          else
+            az aks create \
+              --resource-group "$RESOURCE_GROUP" \
+              --name "$AKS_CLUSTER_NAME" \
+              --node-count "$NODE_COUNT" \
+              --node-vm-size "$VM_SIZE" \
+              --enable-managed-identity \
+              --attach-acr "$ACR_NAME" \
+              --generate-ssh-keys
+          fi
+
+  build-and-deploy:
+    needs: create-infra
+    if: always() && (needs.create-infra.result == 'success' || needs.create-infra.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Build and push image to ACR
+        run: |
+          az acr build \
+            --registry "$ACR_NAME" \
+            --image "$IMAGE_NAME:${{ github.sha }}" \
+            --image "$IMAGE_NAME:latest" \
+            .
+
+      - name: Get AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$AKS_CLUSTER_NAME" \
+            --overwrite-existing
+
+      - name: Ensure ACR attached to AKS (needed for pull access)
+        run: |
+          az aks update \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$AKS_CLUSTER_NAME" \
+            --attach-acr "$ACR_NAME"
+
+      - name: Deploy to AKS
+        run: |
+          export IMAGE="${ACR_NAME}.azurecr.io/${IMAGE_NAME}:${{ github.sha }}"
+          envsubst < k8s/deployment.yaml | kubectl apply -f - -n "$NAMESPACE"
+          kubectl apply -f k8s/service.yaml -n "$NAMESPACE"
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/${IMAGE_NAME} -n "$NAMESPACE" --timeout=180s
+
+      - name: Show service info
+        run: |
+          kubectl get service ${IMAGE_NAME}-service -n "$NAMESPACE"
