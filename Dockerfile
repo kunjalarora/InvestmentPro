@@ -12,4 +12,4 @@ EXPOSE 8000
 
 # Change this to however your app actually starts
 # e.g. gunicorn, uvicorn, python app.py, etc.
-CMD ["python", "app.py"]
+CMD ["python", "main.py"]
