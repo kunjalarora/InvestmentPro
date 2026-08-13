@@ -12,12 +12,12 @@ on:
 env:
   RESOURCE_GROUP: my-resource-group
   LOCATION: eastus
-  AKS_CLUSTER_NAME: my-aks-cluster
+  AKS_CLUSTER_NAME: my-aks-cluster2
   NODE_COUNT: 2
   VM_SIZE: Standard_DS2_v2
   ACR_NAME: myacrregistry123          # must be globally unique, alphanumeric only
   IMAGE_NAME: my-python-app
-  NAMESPACE: default
+  NAMESPACE: actionstesting
 
 jobs:
   create-infra:
